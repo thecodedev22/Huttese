@@ -1,0 +1,15 @@
+start:
+jee-jee "Welcome to Jabba’s palace!"
+bolla greet
+jee-jee "Your adventure continues..."
+👉 The End
+
+scene greet:
+jee-jee "Jabba stares at you. Frogs hop nearby."
+take frog
+kee has frog goto bribe_jabba
+nova goto caught
+
+bribe_jabba:
+jee-jee "You offer the frog to Jabba. He laughs and lets you go!"
+huttdance

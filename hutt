@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+import sys
+import random
+
+# Global state and inventory
+state = {}
+inventory = []
+
+def parse_story(filename):
+    story = {}
+    current_scene = None
+    text_lines = []
+    choices = {}
+
+    with open(filename) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+
+            # Ignore "The End" markers in text
+            if line.startswith("👉"):
+                choices = {}  # no choices = story ends
+                continue
+
+            # New scene
+            if line.endswith(":"):
+                if current_scene:
+                    story[current_scene] = {
+                        "text": "\n".join(text_lines),
+                        "choices": choices
+                    }
+                current_scene = line[:-1]
+                text_lines = []
+                choices = {}
+                continue
+
+            # Huttese commands
+            if line.startswith("jee-jee "):
+                text_lines.append(line[7:])
+
+            elif line.startswith("kee "):
+                parts = line.split()
+                condition = " ".join(parts[1:-2])
+                target = parts[-1]
+                choices[condition] = target
+
+            elif line.startswith("nova "):
+                target = line.split()[-1]
+                choices["nova"] = target
+
+            elif line.startswith("bolla "):
+                scene_name = line.split()[1]
+                choices["bolla"] = scene_name
+
+            elif line.startswith("huttdance"):
+                text_lines.append("\U0001F483 Jabba dances! \U0001F483")
+
+            # Variables
+            elif line.startswith("set "):
+                _, var, val = line.split(maxsplit=2)
+                state[var] = val
+
+            elif line.startswith("random "):
+                _, var, min_val, max_val = line.split()
+                state[var] = random.randint(int(min_val), int(max_val))
+
+            # Inventory
+            elif line.startswith("take "):
+                _, item = line.split(maxsplit=1)
+                inventory.append(item)
+
+            elif line.startswith("drop "):
+                _, item = line.split(maxsplit=1)
+                if item in inventory:
+                    inventory.remove(item)
+
+            elif line.startswith("if has "):
+                parts = line.split()
+                item = parts[2]
+                target = parts[-1]
+                choices[f"has {item}"] = target
+
+            elif line.startswith("if "):
+                parts = line.split()
+                condition = " ".join(parts[1:-2])
+                target = parts[-1]
+                choices[condition] = target
+
+            else:  # narrative text
+                text_lines.append(line)
+
+    # Save last scene
+    if current_scene:
+        story[current_scene] = {
+            "text": "\n".join(text_lines),
+            "choices": choices
+        }
+
+    return story
+
+def evaluate_condition(cond):
+    if cond.startswith("has "):
+        item = cond.split()[1]
+        return item in inventory
+
+    try:
+        var, op, val = cond.split()
+        if var not in state:
+            return False
+        if op == "==":
+            return int(state[var]) == int(val)
+        elif op == "!=":
+            return int(state[var]) != int(val)
+    except:
+        return False
+    return False
+
+def run_story(story, start="start"):
+    scene = start
+    call_stack = []
+
+    while scene in story:
+        print("\n" + story[scene]["text"])
+        choices_dict = story[scene]["choices"]
+
+        # No choices = end of story
+        if not choices_dict:
+            if call_stack:
+                scene = call_stack.pop()
+                continue
+            print("\n👋 The End.")
+            break
+
+        # Handle bolla calls first
+        if "bolla" in choices_dict:
+            call_stack.append(scene)
+            scene = choices_dict["bolla"]
+            continue
+
+        # Evaluate conditions
+        valid_choices = {}
+        for cond, target in choices_dict.items():
+            if cond in ["nova", "bolla"]:
+                continue
+            if evaluate_condition(cond):
+                valid_choices[cond] = target
+
+        # Handle else/nova
+        if not valid_choices and "nova" in choices_dict:
+            scene = choices_dict["nova"]
+            continue
+
+        # Single valid choice
+        if len(valid_choices) == 1:
+            scene = list(valid_choices.values())[0]
+        elif len(valid_choices) > 1:
+            print("\nChoices:")
+            for i, (cond, target) in enumerate(valid_choices.items(), 1):
+                print(f"{i}: {target} (if {cond})")
+            choice = input("👉 Pick a choice number: ").strip()
+            try:
+                idx = int(choice) - 1
+                scene = list(valid_choices.values())[idx]
+            except:
+                print("🙅 Invalid choice, picking first option.")
+                scene = list(valid_choices.values())[0]
+        else:
+            # No valid choice, return from stack if possible
+            if call_stack:
+                scene = call_stack.pop()
+            else:
+                print("\nNo valid choices! The story ends here.")
+                break
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: hutt <storyfile>")
+        sys.exit(1)
+
+    story = parse_story(sys.argv[1])
+    run_story(story)
