@@ -284,4 +284,4 @@ May the Force be with you, and may Jabba smile upon your stories!
 
 ---
 
-*"Kee younglings know not the power of the Hutt tongue!" - Ancient Tatooine Proverb*
+*"Mind tricks do not work on me. only money!" - Watto*
