@@ -1,94 +1,287 @@
 #!/usr/bin/env python3
 import sys
 import random
+import json
+import time
+import re
+from pathlib import Path
+from collections import defaultdict, deque
 
 # Global state and inventory
-state = {}
+state = defaultdict(int)
 inventory = []
+timers = {}
+counters = defaultdict(int)
+flags = set()
+story_log = []
+save_slots = {}
+
+# Enhanced debugging and logging
+DEBUG = False
+def debug_log(msg):
+    if DEBUG:
+        print(f"[DEBUG] {msg}")
+
+def log_story_event(event):
+    timestamp = time.strftime("%H:%M:%S")
+    story_log.append(f"[{timestamp}] {event}")
+
+# Math operations
+def evaluate_math(expression):
+    """Safely evaluate math expressions"""
+    try:
+        # Replace variable names with their values
+        for var, val in state.items():
+            expression = expression.replace(var, str(val))
+        
+        # Only allow safe operations
+        allowed_chars = set("0123456789+-*/(). ")
+        if all(c in allowed_chars for c in expression):
+            return int(eval(expression))
+    except:
+        pass
+    return 0
 
 def parse_story(filename):
     story = {}
     current_scene = None
     text_lines = []
     choices = {}
+    includes = set()
 
-    with open(filename) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
+    def process_file(filepath):
+        nonlocal current_scene, text_lines, choices
+        
+        with open(filepath, 'r', encoding='utf-8') as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if not line or line.startswith('#'):  # Skip empty lines and comments
+                    continue
 
-            # Ignore "The End" markers in text
-            if line.startswith("👉"):
-                choices = {}  # no choices = story ends
-                continue
+                try:
+                    # Include other story files
+                    if line.startswith("include "):
+                        include_file = line.split()[1]
+                        if include_file not in includes:
+                            includes.add(include_file)
+                            include_path = Path(filepath).parent / include_file
+                            if include_path.exists():
+                                process_file(include_path)
+                        continue
 
-            # New scene
-            if line.endswith(":"):
-                if current_scene:
-                    story[current_scene] = {
-                        "text": "\n".join(text_lines),
-                        "choices": choices
-                    }
-                current_scene = line[:-1]
-                text_lines = []
-                choices = {}
-                continue
+                    # End markers
+                    if line.startswith("👉") or line.lower() == "the end":
+                        choices = {}  # no choices = story ends
+                        continue
 
-            # Huttese commands
-            if line.startswith("jee-jee "):
-                text_lines.append(line[7:])
+                    # New scene
+                    if line.endswith(":"):
+                        if current_scene:
+                            story[current_scene] = {
+                                "text": "\n".join(text_lines),
+                                "choices": choices
+                            }
+                        current_scene = line[:-1]
+                        text_lines = []
+                        choices = {}
+                        debug_log(f"New scene: {current_scene}")
+                        continue
 
-            elif line.startswith("kee "):
-                parts = line.split()
-                condition = " ".join(parts[1:-2])
-                target = parts[-1]
-                choices[condition] = target
+                    # Enhanced Huttese commands
+                    if line.startswith("jee-jee "):
+                        text_lines.append(line[8:])
 
-            elif line.startswith("nova "):
-                target = line.split()[-1]
-                choices["nova"] = target
+                    elif line.startswith("kee "):
+                        parts = line.split()
+                        condition = " ".join(parts[1:-2])
+                        target = parts[-1]
+                        choices[condition] = target
 
-            elif line.startswith("bolla "):
-                scene_name = line.split()[1]
-                choices["bolla"] = scene_name
+                    elif line.startswith("nova "):
+                        target = line.split()[-1]
+                        choices["nova"] = target
 
-            elif line.startswith("huttdance"):
-                text_lines.append("\U0001F483 Jabba dances! \U0001F483")
+                    elif line.startswith("bolla "):
+                        scene_name = line.split()[1]
+                        choices["bolla"] = scene_name
 
-            # Variables
-            elif line.startswith("set "):
-                _, var, val = line.split(maxsplit=2)
-                state[var] = val
+                    elif line.startswith("huttdance"):
+                        text_lines.append("\U0001F483 Jabba dances! \U0001F483")
 
-            elif line.startswith("random "):
-                _, var, min_val, max_val = line.split()
-                state[var] = random.randint(int(min_val), int(max_val))
+                    # Enhanced Variables
+                    elif line.startswith("set "):
+                        parts = line.split(maxsplit=2)
+                        var = parts[1]
+                        if len(parts) > 2:
+                            val = parts[2]
+                            # Check if it's a math expression
+                            if any(op in val for op in ['+', '-', '*', '/', '(', ')']):
+                                state[var] = evaluate_math(val)
+                            else:
+                                try:
+                                    state[var] = int(val)
+                                except ValueError:
+                                    state[var] = val
+                        else:
+                            state[var] = 1
 
-            # Inventory
-            elif line.startswith("take "):
-                _, item = line.split(maxsplit=1)
-                inventory.append(item)
+                    elif line.startswith("add "):
+                        parts = line.split(maxsplit=2)
+                        var = parts[1]
+                        val = int(parts[2]) if len(parts) > 2 else 1
+                        state[var] += val
 
-            elif line.startswith("drop "):
-                _, item = line.split(maxsplit=1)
-                if item in inventory:
-                    inventory.remove(item)
+                    elif line.startswith("sub "):
+                        parts = line.split(maxsplit=2)
+                        var = parts[1]
+                        val = int(parts[2]) if len(parts) > 2 else 1
+                        state[var] -= val
 
-            elif line.startswith("if has "):
-                parts = line.split()
-                item = parts[2]
-                target = parts[-1]
-                choices[f"has {item}"] = target
+                    elif line.startswith("mult "):
+                        parts = line.split(maxsplit=2)
+                        var = parts[1]
+                        val = int(parts[2])
+                        state[var] *= val
 
-            elif line.startswith("if "):
-                parts = line.split()
-                condition = " ".join(parts[1:-2])
-                target = parts[-1]
-                choices[condition] = target
+                    elif line.startswith("random "):
+                        parts = line.split()
+                        var = parts[1]
+                        min_val = int(parts[2])
+                        max_val = int(parts[3])
+                        state[var] = random.randint(min_val, max_val)
 
-            else:  # narrative text
-                text_lines.append(line)
+                    # Counters
+                    elif line.startswith("count "):
+                        counter = line.split()[1]
+                        counters[counter] += 1
+
+                    elif line.startswith("reset_count "):
+                        counter = line.split()[1]
+                        counters[counter] = 0
+
+                    # Flags
+                    elif line.startswith("flag "):
+                        flag = line.split()[1]
+                        flags.add(flag)
+
+                    elif line.startswith("unflag "):
+                        flag = line.split()[1]
+                        flags.discard(flag)
+
+                    # Timers
+                    elif line.startswith("timer "):
+                        parts = line.split()
+                        timer_name = parts[1]
+                        duration = int(parts[2])
+                        timers[timer_name] = time.time() + duration
+
+                    # Enhanced Inventory
+                    elif line.startswith("take "):
+                        item = " ".join(line.split()[1:])
+                        inventory.append(item)
+                        log_story_event(f"Took item: {item}")
+
+                    elif line.startswith("drop "):
+                        item = " ".join(line.split()[1:])
+                        if item in inventory:
+                            inventory.remove(item)
+                            log_story_event(f"Dropped item: {item}")
+
+                    elif line.startswith("drop_all"):
+                        inventory.clear()
+                        log_story_event("Dropped all items")
+
+                    # Enhanced Conditionals
+                    elif line.startswith("if has "):
+                        parts = line.split()
+                        item = " ".join(parts[2:-2])
+                        target = parts[-1]
+                        choices[f"has {item}"] = target
+
+                    elif line.startswith("if flag "):
+                        parts = line.split()
+                        flag = parts[2]
+                        target = parts[-1]
+                        choices[f"flag {flag}"] = target
+
+                    elif line.startswith("if count "):
+                        parts = line.split()
+                        counter = parts[2]
+                        op = parts[3]
+                        val = parts[4]
+                        target = parts[-1]
+                        choices[f"count {counter} {op} {val}"] = target
+
+                    elif line.startswith("if timer "):
+                        parts = line.split()
+                        timer = parts[2]
+                        target = parts[-1]
+                        choices[f"timer {timer}"] = target
+
+                    elif line.startswith("if probability "):
+                        parts = line.split()
+                        prob = int(parts[2])
+                        target = parts[-1]
+                        choices[f"probability {prob}"] = target
+
+                    elif line.startswith("if "):
+                        parts = line.split()
+                        condition = " ".join(parts[1:-2])
+                        target = parts[-1]
+                        choices[condition] = target
+
+                    # Text formatting
+                    elif line.startswith("bold "):
+                        text_lines.append(f"**{line[5:]}**")
+
+                    elif line.startswith("italic "):
+                        text_lines.append(f"*{line[7:]}*")
+
+                    elif line.startswith("delay "):
+                        delay_time = float(line.split()[1])
+                        text_lines.append(f"[DELAY:{delay_time}]")
+
+                    elif line.startswith("clear"):
+                        text_lines.append("[CLEAR]")
+
+                    # Sounds/effects
+                    elif line.startswith("sound "):
+                        sound = line.split()[1]
+                        text_lines.append(f"[SOUND:{sound}]")
+
+                    elif line.startswith("music "):
+                        music = line.split()[1]
+                        text_lines.append(f"[MUSIC:{music}]")
+
+                    # Save/Load
+                    elif line.startswith("save "):
+                        slot = line.split()[1]
+                        choices[f"save {slot}"] = "SAVE_GAME"
+
+                    elif line.startswith("load "):
+                        slot = line.split()[1]
+                        choices[f"load {slot}"] = "LOAD_GAME"
+
+                    # Debug
+                    elif line.startswith("debug"):
+                        text_lines.append(f"[DEBUG] State: {dict(state)}")
+                        text_lines.append(f"[DEBUG] Inventory: {inventory}")
+                        text_lines.append(f"[DEBUG] Flags: {flags}")
+                        text_lines.append(f"[DEBUG] Counters: {dict(counters)}")
+
+                    else:  # narrative text
+                        # Process variable substitution in text
+                        processed_line = line
+                        for var, val in state.items():
+                            processed_line = processed_line.replace(f"{{{var}}}", str(val))
+                        text_lines.append(processed_line)
+
+                except Exception as e:
+                    print(f"Error parsing line {line_num}: {line}")
+                    print(f"Error: {e}")
+                    continue
+
+    process_file(filename)
 
     # Save last scene
     if current_scene:
@@ -100,28 +293,170 @@ def parse_story(filename):
     return story
 
 def evaluate_condition(cond):
+    """Enhanced condition evaluation"""
+    
+    # Item possession
     if cond.startswith("has "):
-        item = cond.split()[1]
+        item = cond[4:]
         return item in inventory
 
-    try:
-        var, op, val = cond.split()
-        if var not in state:
-            return False
-        if op == "==":
-            return int(state[var]) == int(val)
-        elif op == "!=":
-            return int(state[var]) != int(val)
-    except:
+    # Flag checking
+    if cond.startswith("flag "):
+        flag = cond[5:]
+        return flag in flags
+
+    # Counter checking
+    if cond.startswith("count "):
+        parts = cond.split()
+        counter = parts[1]
+        op = parts[2]
+        val = int(parts[3])
+        counter_val = counters[counter]
+        
+        if op == "==": return counter_val == val
+        elif op == "!=": return counter_val != val
+        elif op == ">": return counter_val > val
+        elif op == "<": return counter_val < val
+        elif op == ">=": return counter_val >= val
+        elif op == "<=": return counter_val <= val
+
+    # Timer checking
+    if cond.startswith("timer "):
+        timer = cond[6:]
+        if timer in timers:
+            return time.time() >= timers[timer]
         return False
+
+    # Probability
+    if cond.startswith("probability "):
+        prob = int(cond.split()[1])
+        return random.randint(1, 100) <= prob
+
+    # Save/Load commands
+    if cond.startswith("save "):
+        slot = cond.split()[1]
+        save_game(slot)
+        return True
+
+    if cond.startswith("load "):
+        slot = cond.split()[1]
+        return load_game(slot)
+
+    # Variable comparison
+    try:
+        parts = cond.split()
+        if len(parts) == 3:
+            var, op, val = parts
+            if var not in state:
+                return False
+            
+            var_val = state[var]
+            try:
+                val = int(val)
+            except ValueError:
+                pass  # Keep as string
+            
+            if op == "==": return var_val == val
+            elif op == "!=": return var_val != val
+            elif op == ">": return int(var_val) > int(val)
+            elif op == "<": return int(var_val) < int(val)
+            elif op == ">=": return int(var_val) >= int(val)
+            elif op == "<=": return int(var_val) <= int(val)
+            elif op == "contains": return str(val) in str(var_val)
+    except:
+        pass
+    
     return False
+
+def save_game(slot):
+    """Save game state"""
+    save_data = {
+        'state': dict(state),
+        'inventory': inventory.copy(),
+        'flags': list(flags),
+        'counters': dict(counters),
+        'timestamp': time.time()
+    }
+    save_slots[slot] = save_data
+    print(f"💾 Game saved to slot {slot}")
+    log_story_event(f"Game saved to slot {slot}")
+
+def load_game(slot):
+    """Load game state"""
+    if slot in save_slots:
+        save_data = save_slots[slot]
+        state.clear()
+        state.update(save_data['state'])
+        inventory.clear()
+        inventory.extend(save_data['inventory'])
+        flags.clear()
+        flags.update(save_data['flags'])
+        counters.clear()
+        counters.update(save_data['counters'])
+        print(f"📁 Game loaded from slot {slot}")
+        log_story_event(f"Game loaded from slot {slot}")
+        return True
+    else:
+        print(f"❌ No save found in slot {slot}")
+        return False
+
+def display_text(text):
+    """Enhanced text display with effects"""
+    lines = text.split('\n')
+    for line in lines:
+        if line.startswith("[DELAY:"):
+            delay = float(line[7:-1])
+            time.sleep(delay)
+        elif line == "[CLEAR]":
+            print("\n" * 50)  # Clear screen
+        elif line.startswith("[SOUND:"):
+            sound = line[7:-1]
+            print(f"🔊 *{sound}*")
+        elif line.startswith("[MUSIC:"):
+            music = line[7:-1]
+            print(f"🎵 *Playing: {music}*")
+        else:
+            print(line)
+
+def display_status():
+    """Show current game status"""
+    print("\n" + "="*50)
+    print("📊 GAME STATUS")
+    print("="*50)
+    
+    if state:
+        print("🔢 Variables:")
+        for var, val in sorted(state.items()):
+            print(f"   {var}: {val}")
+    
+    if inventory:
+        print(f"🎒 Inventory ({len(inventory)} items):")
+        for item in inventory:
+            print(f"   • {item}")
+    
+    if flags:
+        print(f"🚩 Flags: {', '.join(sorted(flags))}")
+    
+    if counters:
+        print("🔢 Counters:")
+        for counter, count in sorted(counters.items()):
+            print(f"   {counter}: {count}")
+    
+    print("="*50 + "\n")
 
 def run_story(story, start="start"):
     scene = start
     call_stack = []
+    scene_history = deque(maxlen=10)  # Keep last 10 scenes
+
+    print("🎭 Starting Hutt Story Engine...")
+    print("Type 'help' for commands, 'status' for game state, 'quit' to exit\n")
 
     while scene in story:
-        print("\n" + story[scene]["text"])
+        scene_history.append(scene)
+        log_story_event(f"Entered scene: {scene}")
+        
+        display_text(story[scene]["text"])
         choices_dict = story[scene]["choices"]
 
         # No choices = end of story
@@ -154,17 +489,66 @@ def run_story(story, start="start"):
         # Single valid choice
         if len(valid_choices) == 1:
             scene = list(valid_choices.values())[0]
+            time.sleep(1)  # Brief pause for pacing
         elif len(valid_choices) > 1:
-            print("\nChoices:")
-            for i, (cond, target) in enumerate(valid_choices.items(), 1):
+            print("\n🎯 Choices:")
+            choice_list = list(valid_choices.items())
+            for i, (cond, target) in enumerate(choice_list, 1):
                 print(f"{i}: {target} (if {cond})")
-            choice = input("👉 Pick a choice number: ").strip()
-            try:
-                idx = int(choice) - 1
-                scene = list(valid_choices.values())[idx]
-            except:
-                print("🙅 Invalid choice, picking first option.")
-                scene = list(valid_choices.values())[0]
+            
+            while True:
+                choice = input("\n👉 Pick a choice number (or command): ").strip().lower()
+                
+                # Special commands
+                if choice == 'help':
+                    print("\n📋 Commands:")
+                    print("  help - Show this help")
+                    print("  status - Show game state")
+                    print("  history - Show recent scenes")
+                    print("  log - Show story log")
+                    print("  save <slot> - Save game")
+                    print("  load <slot> - Load game")
+                    print("  debug - Toggle debug mode")
+                    print("  quit - Exit game\n")
+                    continue
+                elif choice == 'status':
+                    display_status()
+                    continue
+                elif choice == 'history':
+                    print(f"\n📜 Recent scenes: {' → '.join(list(scene_history))}\n")
+                    continue
+                elif choice == 'log':
+                    print("\n📝 Story log:")
+                    for entry in story_log[-10:]:
+                        print(f"  {entry}")
+                    print()
+                    continue
+                elif choice.startswith('save '):
+                    slot = choice.split()[1]
+                    save_game(slot)
+                    continue
+                elif choice.startswith('load '):
+                    slot = choice.split()[1]
+                    load_game(slot)
+                    continue
+                elif choice == 'debug':
+                    global DEBUG
+                    DEBUG = not DEBUG
+                    print(f"🐛 Debug mode: {'ON' if DEBUG else 'OFF'}")
+                    continue
+                elif choice == 'quit':
+                    print("👋 Goodbye!")
+                    return
+                
+                try:
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(choice_list):
+                        scene = choice_list[idx][1]
+                        break
+                    else:
+                        print("🙅 Invalid choice number.")
+                except ValueError:
+                    print("🙅 Please enter a number or command.")
         else:
             # No valid choice, return from stack if possible
             if call_stack:
@@ -173,10 +557,32 @@ def run_story(story, start="start"):
                 print("\nNo valid choices! The story ends here.")
                 break
 
-if __name__ == "__main__":
+def main():
+    global DEBUG
+    
     if len(sys.argv) < 2:
-        print("Usage: hutt <storyfile>")
+        print("Usage: hutt <storyfile> [--debug]")
         sys.exit(1)
 
-    story = parse_story(sys.argv[1])
-    run_story(story)
+    if "--debug" in sys.argv:
+        DEBUG = True
+        print("🐛 Debug mode enabled")
+
+    story_file = sys.argv[1]
+    
+    try:
+        story = parse_story(story_file)
+        print(f"📚 Loaded story with {len(story)} scenes")
+        run_story(story)
+    except FileNotFoundError:
+        print(f"❌ Story file '{story_file}' not found!")
+        sys.exit(1)
+    except Exception as e:
+        print(f"💥 Error running story: {e}")
+        if DEBUG:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
