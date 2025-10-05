@@ -1,0 +1,7 @@
+# Ignore build artifacts and binaries
+build/
+dist/
+*.spec
+*.pyc
+__pycache__/
+venv/
